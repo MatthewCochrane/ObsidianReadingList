@@ -54,6 +54,8 @@ contentType: "${contentType}"
 link: "${url}"
 # Author
 author: "${author}"
+# The year or more specific that the article was published
+published: "Unknown"
 # A description of where you found this resource.  How did you come across it?
 source: "${source}"
 # A description of why to read it
