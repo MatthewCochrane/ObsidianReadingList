@@ -3,12 +3,12 @@ import {
     Modal,
     Notice,
     Plugin,
-    PluginSettingTab,
-    Setting, TextComponent,
+    SuggestModal, TextComponent,
 } from 'obsidian';
 import fetch from 'electron-fetch';
 import sanitize from "sanitize-filename";
 import {format} from 'date-fns';
+import * as fs from "fs";
 
 interface MyPluginSettings {
     mySetting: string;
@@ -22,33 +22,34 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
 export default class MyPlugin extends Plugin {
     settings: MyPluginSettings;
 
-    async addItem(url: string, author: string, source: string, whyRead: string, priority: string, tags: string) {
-        let headings;
+    async getTitleAtUrl(url: string) {
         try {
             const result = await fetch(url, {useElectronNet: false});
             const el = document.createElement('html');
             el.innerHTML = await result.text();
-            headings = el.getElementsByTagName('h1');
+            const headings = el.getElementsByTagName('h1');
+            const firstHeadingText = headings?.[0].innerText;
+            return firstHeadingText.trim().replace(/\r\n/g, ' ').replace(/:+/, '-');
         } catch (ex) {
-            console.error(ex);
+            return undefined;
         }
-        console.log(headings);
-        const heading = headings?.[0]?.innerText;
-        if (heading == null) {
-            console.log('invalid header so not sure what to call a new file!');
-            return;
-        }
+    }
+
+    async addItem(url: string, heading: string, contentType: string, author: string, source: string, whyRead: string, priority: string, tags: string) {
 
         const fileName = sanitize(heading);
 
+        // This isn't in the api yet but it works..
+        // @ts-ignore
         const file = this.app.workspace.activeLeaf?.view?.file;
         const newFileParentPath = this.app.fileManager.getNewFileParent(file?.path ?? '').path;
         const newFilePath = `${newFileParentPath}/${fileName}.md`;
 
-        const template = `
----
+        const template = `---
 # Date Added
 added: ${format(new Date(), "yyyy-MM-dd HH:mm")}
+# Book, Article, Paper, etc.
+contentType: "${contentType}"
 # A link to the resource
 link: "${url}"
 # Author
@@ -70,7 +71,14 @@ finished:
 
 `
 
-        await this.app.vault.create(newFilePath, template);
+        const exists = await new Promise((resolve) =>
+            fs.stat(newFilePath, (err, stats) =>
+                resolve(!err && stats.isFile())
+            ));
+        console.log(`File ${newFilePath} already existed.  Aborting.`);
+        if (exists) return;
+        const newFile = await this.app.vault.create(newFilePath, template);
+        await this.app.workspace.activeLeaf.openFile(newFile);
     }
 
     async onload() {
@@ -92,14 +100,17 @@ finished:
                 let leaf = this.app.workspace.activeLeaf;
                 if (leaf) {
                     if (!checking) {
-
                         new TextModal(this.app, 'URL').open().then(async (url) => {
-                            const author = await new TextModal(this.app, 'Author').open();
-                            const source = await new TextModal(this.app, 'A description of where you found this resource.  How did you come across it?').open();
-                            const whyRead = await new TextModal(this.app, 'Why should you read it?').open();
-                            const priority = await new TextModal(this.app, 'Priority (1-5)').open();
-                            const tags = await new TextModal(this.app, 'Enter tags:').open();
-                            await this.addItem(url, author, source, whyRead, priority, tags);
+                            const title = await textModal(this.app, 'Title', await this.getTitleAtUrl(url));
+                            const suggestions = ['Book', 'Article', 'Paper', 'Forum', 'Documentation', 'Presentation', 'Other'];
+                            const contentType = await choiceModal(this.app, suggestions, 'ContentType');
+                            const author = await textModal(this.app, 'Author');
+                            const source = await textModal(this.app, 'A description of where you found this resource.  How did you come across it?');
+                            const whyRead = await textModal(this.app, 'Why should you read it?');
+                            const priority = await textModal(this.app, 'Priority (1-5)');
+                            // TODO: Make tags autocomplete!
+                            const tags = await textModal(this.app, 'Enter tags:');
+                            await this.addItem(url, title, contentType, author, source, whyRead, priority, tags);
                         })
                     }
                     return true;
@@ -107,18 +118,6 @@ finished:
                 return false;
             }
         });
-
-        this.addSettingTab(new SampleSettingTab(this.app, this));
-
-        this.registerCodeMirror((cm: CodeMirror.Editor) => {
-            console.log('codemirror', cm);
-        });
-
-        this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-            console.log('click', evt);
-        });
-
-        this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
     }
 
     onunload() {
@@ -134,18 +133,72 @@ finished:
     }
 }
 
+class ChoiceModal extends SuggestModal<string> {
+    resolveClosePromise: (result: string) => void
+    fieldName: string | undefined;
+    suggestions: string[];
+
+    constructor(app: App, suggestions: string[], fieldName?: string) {
+        super(app);
+        this.fieldName = fieldName
+        this.suggestions = suggestions
+    }
+
+    open(): Promise<string> {
+        return new Promise((resolve) => {
+            super.open()
+            this.resolveClosePromise = resolve;
+        });
+    }
+
+    onOpen() {
+        super.onOpen();
+        if (!this.fieldName) return
+        this.titleEl.innerText = this.fieldName;
+        const promptEl = this.inputEl.parentElement;
+        if (!promptEl) return;
+        promptEl.prepend(this.titleEl);
+    }
+
+    /**
+     * Called every time the input changes and returns the new suggestions
+     * @param query - the text in the modal input so far
+     */
+    getSuggestions(query: string): string[] {
+        return this.suggestions.filter((item) => item.toLowerCase().startsWith(query.toLowerCase()))
+    }
+
+    onChooseSuggestion(item: string, evt: MouseEvent | KeyboardEvent): void {
+        this.resolveClosePromise(item);
+    }
+
+    renderSuggestion(value: string, el: HTMLElement): void {
+        el.innerText = value;
+    }
+}
+
+async function choiceModal(app: App, suggestions: string[], fieldName?: string) {
+    return await new ChoiceModal(app, suggestions, fieldName).open()
+}
+
+function textModal(app: App, fieldName: string, initialValue?: string) {
+    return new TextModal(app, fieldName, initialValue).open();
+}
+
 class TextModal extends Modal {
     resolveClosePromise: (result: any) => void
     value: any;
     fieldName: string;
+    initialValue?: string;
 
-    constructor(app: App, fieldName: string) {
+    constructor(app: App, fieldName: string, initialValue?: string) {
         super(app);
         this.fieldName = fieldName
+        this.initialValue = initialValue;
     }
 
-    open(): Promise<any> {
-        return new Promise((resolve, reject) => {
+    open(): Promise<string> {
+        return new Promise((resolve) => {
             super.open()
             this.resolveClosePromise = resolve;
         });
@@ -157,9 +210,11 @@ class TextModal extends Modal {
         div.innerHTML = `<b>${this.fieldName}</b>`;
         this.contentEl.append(div);
         const input = new TextComponent(this.contentEl);
+        input.setValue(this.initialValue ?? '')
         input.inputEl.focus();
+        input.inputEl.select();
         input.inputEl.addEventListener('keydown', async (ev) => {
-            if (ev.key === 'Enter' || ev.keyCode === 13) {
+            if (ev.key === 'Enter') {
                 this.value = input.getValue();
                 this.close();
             }
@@ -170,34 +225,5 @@ class TextModal extends Modal {
         let {contentEl} = this;
         contentEl.empty();
         this.resolveClosePromise(this.value);
-    }
-}
-
-class SampleSettingTab extends PluginSettingTab {
-    plugin: MyPlugin;
-
-    constructor(app: App, plugin: MyPlugin) {
-        super(app, plugin);
-        this.plugin = plugin;
-    }
-
-    display(): void {
-        let {containerEl} = this;
-
-        containerEl.empty();
-
-        containerEl.createEl('h2', {text: 'Settings for my awesome plugin.'});
-
-        new Setting(containerEl)
-            .setName('Setting #1')
-            .setDesc('It\'s a secret')
-            .addText(text => text
-                .setPlaceholder('Enter your secret')
-                .setValue('')
-                .onChange(async (value) => {
-                    console.log('Secret: ' + value);
-                    this.plugin.settings.mySetting = value;
-                    await this.plugin.saveSettings();
-                }));
     }
 }
