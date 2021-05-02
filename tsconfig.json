@@ -15,7 +15,8 @@
       "scripthost",
       "es2015"
     ],
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    "strictNullChecks": true
   },
   "include": [
     "**/*.ts"
