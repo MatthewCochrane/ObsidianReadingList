@@ -69,6 +69,8 @@ finished:
 ---
 #toRead ${tags}
 
+Link: [${heading}](${url})
+
 # ${heading}
 
 `
