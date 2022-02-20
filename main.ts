@@ -141,11 +141,12 @@ class ChoiceModal extends SuggestModal<string> {
     resolveClosePromise: (result: string) => void
     fieldName: string | undefined;
     suggestions: string[];
+    static customTextSuggestion: string = 'Custom Text...'
 
     constructor(app: App, suggestions: string[], fieldName?: string) {
         super(app);
         this.fieldName = fieldName
-        this.suggestions = suggestions
+        this.suggestions = [...suggestions, ChoiceModal.customTextSuggestion]
     }
 
     open(): Promise<string> {
@@ -182,7 +183,10 @@ class ChoiceModal extends SuggestModal<string> {
 }
 
 async function choiceModal(app: App, suggestions: string[], fieldName?: string) {
-    return await new ChoiceModal(app, suggestions, fieldName).open()
+    const result = await new ChoiceModal(app, suggestions, fieldName).open()
+    if (result !== ChoiceModal.customTextSuggestion) return result
+
+    return await textModal(app, fieldName || '')
 }
 
 function textModal(app: App, fieldName: string, initialValue?: string) {
