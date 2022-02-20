@@ -1,9 +1,8 @@
 import {
     App,
     Modal,
-    Notice,
     Plugin,
-    SuggestModal, TextComponent,
+    SuggestModal, TextComponent, TFolder,
 } from 'obsidian';
 import fetch from 'electron-fetch';
 import sanitize from "sanitize-filename";
@@ -21,29 +20,46 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
 // noinspection JSUnusedGlobalSymbols
 export default class MyPlugin extends Plugin {
     settings: MyPluginSettings;
+    // TODO: make this a setting
+    static readingListPath = 'Archive/Research/Reading Lists'
 
-    async getTitleAtUrl(url: string) {
+    async getPossibleTitlesAtUrl(url: string) {
         try {
             const result = await fetch(url, {useElectronNet: false});
             const el = document.createElement('html');
             el.innerHTML = await result.text();
-            const headings = el.getElementsByTagName('h1');
-            const firstHeadingText = headings?.[0].innerText;
-            return firstHeadingText.trim().replace(/\r\n/g, ' ').replace(/:+/, '-');
+            const titleTag = el.getElementsByTagName('title') || [];
+            const h1Headings = el.getElementsByTagName('h1') || [];
+            const h2Headings = el.getElementsByTagName('h2') || [];
+            // @ts-ignore
+            return [...titleTag, ...h1Headings, ...h2Headings].map(
+                (node) => node.innerText.trim().replace(/\r\n/g, ' ').replace(/:+/, '-')
+            );
         } catch (ex) {
             return undefined;
         }
     }
 
-    async addItem(url: string, heading: string, contentType: string, author: string, source: string, whyRead: string, priority: string, tags: string) {
-
-        const fileName = sanitize(heading);
-
-        // This isn't in the api yet but it works..
+    async getReadingListOptions() {
+        // This isn't in the api yet, but it works..
         // @ts-ignore
         const file = this.app.workspace.activeLeaf?.view?.file;
-        const newFileParentPath = this.app.fileManager.getNewFileParent(file?.path ?? '').path;
-        const newFilePath = `${newFileParentPath}/${fileName}.md`;
+        const currentNoteDirectory = this.app.fileManager.getNewFileParent(file?.path ?? '').path;
+        try {
+            const readingListFolder = this.app.vault.getAbstractFileByPath(MyPlugin.readingListPath)
+            if (readingListFolder == null) return [currentNoteDirectory]
+            if (!(readingListFolder instanceof TFolder)) return [currentNoteDirectory]
+            // Return sub-folders in the root reading lists folder.
+            return [currentNoteDirectory, ...readingListFolder.children.filter(child => child instanceof TFolder).map(e => e.path)]
+        } catch (ex) {
+            return [currentNoteDirectory];
+        }
+    }
+
+    async addItem(url: string, heading: string, directoryPath: string, contentType: string, author: string, source: string, whyRead: string, priority: string, tags: string) {
+
+        const fileName = sanitize(heading);
+        const newFilePath = `${directoryPath}/${fileName}.md`;
 
         const template = `---
 # Date Added
@@ -86,26 +102,20 @@ Link: [${heading}](${url})
     }
 
     async onload() {
-        console.log('loading plugin');
+        console.log('loading plugin ObsidianReadingList');
 
         await this.loadSettings();
-
-        this.addRibbonIcon('dice', 'Sample Plugin', () => {
-            new Notice('This is a notice!');
-        });
 
         this.addCommand({
             id: 'add-reading-item',
             name: 'Add Item To Reading List',
-            // callback: () => {
-            // 	console.log('Simple Callback');
-            // },
             checkCallback: (checking: boolean) => {
                 let leaf = this.app.workspace.activeLeaf;
                 if (leaf) {
                     if (!checking) {
                         new TextModal(this.app, 'URL').open().then(async (url) => {
-                            const title = await textModal(this.app, 'Title', await this.getTitleAtUrl(url));
+                            const title = await choiceModal(this.app, (await this.getPossibleTitlesAtUrl(url)) || [], 'Title');
+                            const readingListPath = await choiceModal(this.app, (await this.getReadingListOptions()) || [], 'List');
                             const suggestions = ['Book', 'Article', 'Paper', 'Forum', 'Documentation', 'Presentation', 'Other'];
                             const contentType = await choiceModal(this.app, suggestions, 'ContentType');
                             const author = await textModal(this.app, 'Author');
@@ -114,7 +124,7 @@ Link: [${heading}](${url})
                             const priority = await textModal(this.app, 'Priority (1-5)');
                             // TODO: Make tags autocomplete!
                             const tags = await textModal(this.app, 'Enter tags:');
-                            await this.addItem(url, title, contentType, author, source, whyRead, priority, tags);
+                            await this.addItem(url, title, readingListPath, contentType, author, source, whyRead, priority, tags);
                         })
                     }
                     return true;
